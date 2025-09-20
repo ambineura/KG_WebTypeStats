@@ -8,8 +8,6 @@
 // @match        http*://*.klavogonki.ru/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=klavogonki.ru
 // @grant        none
-// @downloadURL https://update.greasyfork.org/scripts/549308/KG_WebTypeStats.user.js
-// @updateURL https://update.greasyfork.org/scripts/549308/KG_WebTypeStats.meta.js
 // ==/UserScript==
 
 // ⏱️🎹📖💼📜🗃️📂🙈
