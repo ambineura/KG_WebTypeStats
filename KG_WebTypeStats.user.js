@@ -8,6 +8,8 @@
 // @match        http*://*.klavogonki.ru/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=klavogonki.ru
 // @grant        none
+// @downloadURL  https://github.com/ambineura/KG_WebTypeStats/raw/main/KG_WebTypeStats.user.js
+// @updateURL	 https://github.com/ambineura/KG_WebTypeStats/raw/main/KG_WebTypeStats.user.js
 // ==/UserScript==
 
 // ⏱️🎹📖💼📜🗃️📂🙈
