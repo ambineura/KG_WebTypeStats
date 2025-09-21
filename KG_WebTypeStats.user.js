@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KG_WebTypeStats
 // @namespace    KG_WebTypeStats
-// @version      0.72
+// @version      0.73
 // @description  Записывает все нажатия клавиш в процессе геймплея для дальнейшего статистического анализа. Работает только с полем ввода набираемого в заезде текста.
 // @author       un4given (111001)
 // @license      GNU GPLv3
@@ -20,7 +20,7 @@
 // --------- !!! DO NOT MODIFY ANYTHING ABOVE THIS LINE UNLESS YOU ARE AWARE OF WHAT YOU ARE DOING !!! -------
 // some internal settings\constants
 
-const MAX_LAST_WTS_COUNT = 100; //limit history of autosaved WTSs
+const MAX_LAST_WTS_COUNT = 100; // limit history of autosaved WTSs
 
 const WTS_PANEL_TITLE = 'Статистика набора'; // заголовок панели в заезде (справа)
 
@@ -43,16 +43,21 @@ const TOAST_CLIPBOARD_COPY_OK = 'Скопировано!';
 const TOAST_CLIPBOARD_COPY_FAIL = 'Ха! А копировать-то и нечего...';
 const TOAST_NOTHING_TO_SAVE = 'Чё-т нечего сохранять!';
 const TOAST_NOTHING_TO_PUBLISH = 'Чё-т нечего публиковать!';
+const TOAST_NOTHING_TO_DELETE = 'Чё-т нечего удалять!';
 const TOAST_SOMETHING_WENT_WRONG = 'Что-то пошло не так...';
 const TOAST_USER_NOT_LOGGED_IN = 'Сперва надо залогиниться!';
 const TOAST_BLOG_HIDDEN_POST_ADDED = 'Спрятано в БЖ!';
 const TOAST_BLOG_POST_ADDED = 'Опубликовано в БЖ!';
+const TOAST_ARCHIVE_DELETED = 'Архив статистики удалён!';
 
 const MENU_OPENFILE_HINT = "Открыть файл с WTS-кой (можно несколько) или архив целиком.\nЕсли кликать с Shift'ом, то открываемые файлы будут добавляться к загруженным ранее.";
 const MENU_SAVEFILE_HINT = 'Сохранить текущую WTS-ку в файл.';
-const MENU_SAVEARCHIVE_HINT = 'Сохранить весь набор WTS-ок из архива или из загруженных файлов.';
+const MENU_SAVECOLLECTION_HINT = 'Сохранить всю коллекцию WTS-ок из архива или из загруженных файлов.';
 const MENU_PUBLISHBLOG_HINT = "Опубликовать текущую WTS-ку в бортжурналe.\nЕсли кликать с Shift'ом, то запись будет публичной, иначе − скрытой.\nКлик с Alt'ом − опубликовать в формате JSON.";
+const MENU_DELETEARCHIVE_HINT = "Удалить весь архив статистики заездов";
 const MENU_HELP_HINT = "Отправиться в БЖ к унчу за FAQ'ом/обсуждениями";
+
+const CONFIRM_DELETEARCHIVE = "!! Внимание !!\nЭто действие необратимо, поэтому убедитесь, что вы предварительно сохранили всю необходимую вам информацию.\n\nВы действительно хотите удалить весь архив статистики заездов?";
 
 // custom game mode names
 const GAME_MODES = {
@@ -202,6 +207,9 @@ const ColorUtils = {
     }
 };
 
+const __InitArchive = () => {localStorage.WTS_ARCHIVE = JSON.stringify([])};
+const __LoadArchive = () => JSON.parse(localStorage.getItem('WTS_ARCHIVE') || "[]").reverse();
+
 let __appMode = AM_EMPTY;
 
 let __WTSData = [];
@@ -245,10 +253,10 @@ let __files = []; // same, but for opened\pasted files
     // perform initialization
     let lastMS = 0;
     if (!localStorage.WTS_ARCHIVE) {
-        localStorage.WTS_ARCHIVE = JSON.stringify([]);
+        __InitArchive();
     }
 
-    const __isInGame = (/\/g\//.test(location.href))? location.href.split('gmid=')[1] : null; // contains gameID, just in case :)
+    const __isInGame = (/\/g\//.test(location.href))? location.href.split('gmid=')[1].replace(/[^\d]+/, '') : null; // contains gameID, just in case :)
     if (__isInGame && localStorage.getItem('curWTS'))
     {
         //cleanup previous leftovers
@@ -345,7 +353,7 @@ let __files = []; // same, but for opened\pasted files
 
                 // save WTS info for future use
                 const ver = WTS_FORMAT_VERSION;
-                const time = +Date.now();
+                const time = Date.now();
                 const uid = (typeof __user__ !== 'undefined')? __user__ : 0;
                 let type = oO('#gamedesc').children[0].className.replace('gametype-', '') || "unknown";
                 if (type == 'voc') {
@@ -489,6 +497,7 @@ let __files = []; // same, but for opened\pasted files
 
                                 tmpArchive.push(curWTS);
                                 localStorage.WTS_ARCHIVE = JSON.stringify(tmpArchive);
+                                __archive = __LoadArchive();
                                 __isWTSAddedToArchive = true;
                             }
                         }
@@ -501,6 +510,18 @@ let __files = []; // same, but for opened\pasted files
     }
 
 // ---------------------------------------
+
+    function createWTSfromData(data, time=Date.now(), uid=0, type='unknown') {
+        let newWTS = {
+            "ver": WTS_FORMAT_VERSION,
+            time,
+            uid,
+            type
+        };
+
+        newWTS.data = data;
+        return newWTS;
+    }
 
     //auxiliary functions (partly made with AI)
     function annotateKeypresses(sequence) {
@@ -845,19 +866,14 @@ let __files = []; // same, but for opened\pasted files
                     return;
             }
 
+            // normally we expect full WTS from clipboard, but it is also possible to paste only keypresses data
+            // in that case we just need to create empty WTS from given data:
             if (!fullWTS.data) {
-                //TODO: remake this bullshit (or remove this at all!)
-                let newWTS = {};
-                newWTS.data = fullWTS;
-                newWTS.type = 'unknown';
-                newWTS.uid = 0;
-                newWTS.time = +Date.now();
-                fullWTS = newWTS;
+                fullWTS = createWTSfromData(fullWTS);
             }
 
             __files.push(fullWTS);
 
-            let newIdx = 0;
             let sel;
             if (__appMode != AM_FILES) {
                 setAppMode(AM_FILES);
@@ -867,11 +883,10 @@ let __files = []; // same, but for opened\pasted files
                 dummySelHTML = dummySelHTML.replace(/<\/?select.*?>/g, ''); // ha-ha, genius, lol!
                 sel = oO('#wts-file-list');
                 sel.innerHTML = dummySelHTML;
-                newIdx = __files.length - 1;
             }
 
-            sel.selectedIndex = newIdx;
-            sel.dispatchEvent(new Event('change')); //trigger onChange event
+            sel.selectedIndex = __files.length - 1;
+            sel.dispatchEvent(new Event('change')); // trigger onChange event to update view
             sel.focus();
         });
 
@@ -892,25 +907,31 @@ let __files = []; // same, but for opened\pasted files
             };
         });
 
-        // переключение графиков стрелками ← → и по alt+1..3, а также обработка клавиши del и шорткатов меню
+        // переключение графиков стрелками ← → и по alt+1..3
         modal.addEventListener("keydown", (e) => {
-            if (!chartFrames.length) return;
-            let isCaptured = false;
+            if (!chartFrames || !chartFrames.length) return;
 
-            // switch charts with alt+1..3 of with ← →
+            // switch charts with alt+1..3 or with ← →
             if (e.altKey && ['1', '2', '3'].includes(e.key)) {
                 e.preventDefault();
                 const newFrameIndex = parseInt(e.key) - 1;
                 if (newFrameIndex != currentFrameIndex) {
                     showFrame(newFrameIndex);
-                } else {
-//                    showToast('Дак мы уже тут!', 'warn');
                 }
             } else if ((e.key === "ArrowRight") && (currentFrameIndex < chartFrames.length - 1)) {
                 showFrame(currentFrameIndex + 1);
             } else if ((e.key === "ArrowLeft") && (currentFrameIndex > 0)) {
                 showFrame(currentFrameIndex - 1);
-            } else if (e.key === 'Delete' && __appMode == AM_FILES && __files.length) {
+            }
+
+            if (['ArrowRight', 'ArrowLeft'].includes(e.key)) {
+                e.preventDefault();
+            }
+        });
+
+        // обработка клавиши 'Del' и шорткатов меню
+        modal.addEventListener("keydown", (e) => {
+            if (e.key === 'Delete' && __appMode == AM_FILES && __files.length) {
                 // process 'Del' button in files mode
                 e.preventDefault();
                 const sel = oO('#wts-file-list');
@@ -939,15 +960,11 @@ let __files = []; // same, but for opened\pasted files
                     sel.innerHTML = dummySelHTML;
                     let newIdx = Math.min(curIdx, __files.length - 1);
                     sel.selectedIndex = newIdx;
-                    sel.dispatchEvent(new Event('change')); //trigger onChange event
+                    sel.dispatchEvent(new Event('change')); // trigger onChange event to update view
                     sel.focus();
                 } else {
-                    __archive = JSON.parse(localStorage.WTS_ARCHIVE).reverse();
-                    if (__archive.length) {
-                        setAppMode(AM_ARCHIVE);
-                    } else {
-                        setAppMode(AM_EMPTY);
-                    }
+                    __archive = __LoadArchive(); // just in case
+                    setAppMode(AM_ARCHIVE);
                 }
             } else if (e.ctrlKey || e.metaKey) {
                 const shortCuts = Menu.ctrlShortCuts;
@@ -955,10 +972,6 @@ let __files = []; // same, but for opened\pasted files
                     e.preventDefault();
                     Menu[shortCuts[e.code]](e);
                 }
-            }
-
-            if (['ArrowRight', 'ArrowLeft'].includes(e.key)) {
-                e.preventDefault();
             }
         });
 
@@ -974,9 +987,11 @@ let __files = []; // same, but for opened\pasted files
 	<a href="#" data-action="openFile" title="${MENU_OPENFILE_HINT}">Открыть...</a>
 	<hr>
 	<a href="#" data-action="saveToFile" title="${MENU_SAVEFILE_HINT}">Сохранить файл</a>
-	<a href="#" data-action="saveArchive" title="${MENU_SAVEARCHIVE_HINT}">Сохранить текущий архив</a>
+	<a href="#" data-action="saveCollection" title="${MENU_SAVECOLLECTION_HINT}">Сохранить коллекцию</a>
     <hr>
 	<a href="#" data-action="publishToBlog" title="${MENU_PUBLISHBLOG_HINT}">Опубликовать в БЖ</a>
+    <hr>
+	<a href="#" data-action="deleteArchive" title="${MENU_DELETEARCHIVE_HINT}">Удалить архив</a>
     <hr>
 	<a href="https://klavogonki.ru/u/#/111001/journal/68a8aea56271aec5a58b4567" title="${MENU_HELP_HINT}">Памагити!!!</a>
   </div>
@@ -1120,7 +1135,7 @@ let __files = []; // same, but for opened\pasted files
                 setAppMode(AM_FILES);
                 const sel = oO('#wts-file-list');
                 sel.selectedIndex = newIdx;
-                sel.dispatchEvent(new Event('change')); //trigger onChange event
+                sel.dispatchEvent(new Event('change')); // trigger onChange event to update view
                 sel.focus();
             } else {
                 setAppMode(AM_EMPTY);
@@ -1261,7 +1276,7 @@ let __files = []; // same, but for opened\pasted files
                     };
 
                     setMainWindowContent(MWC_CHARTS);
-                    sel.dispatchEvent(new Event('change')); //trigger onChange event
+                    sel.dispatchEvent(new Event('change')); // trigger onChange event to update view
                     sel.focus();
                 } else {
                     setAppMode(AM_EMPTY);
@@ -1284,7 +1299,7 @@ let __files = []; // same, but for opened\pasted files
                     };
 
                     setMainWindowContent(MWC_CHARTS);
-                    sel.dispatchEvent(new Event('change')); //trigger onChange event
+                    sel.dispatchEvent(new Event('change')); // trigger onChange event to update view
                     sel.focus();
                 } else {
                     setAppMode(AM_EMPTY);
@@ -1295,7 +1310,7 @@ let __files = []; // same, but for opened\pasted files
             case AM_EMPTY:
             default: {
                 __appMode = AM_EMPTY;
-                setWindowHeaderTitle('🙈 тут ничего нет!');
+                setWindowHeaderTitle('🙈 Здесь ничего нет!');
                 setWindowHeaderInfo('');
                 setMainWindowContent(MWC_EMPTY);
                 break;
@@ -1400,6 +1415,7 @@ let __files = []; // same, but for opened\pasted files
             'KeyO':'openFile',
             'KeyS':'saveFile',
             'KeyB':'publishToBlog',
+            'Delete':'deleteArchive',
         },
 
         openFile: function(e) {
@@ -1410,7 +1426,7 @@ let __files = []; // same, but for opened\pasted files
         // master function for saving, kinda virtual
         saveFile: function(e) {
             if (e.shiftKey) {
-                this.saveArchive();
+                this.saveCollection();
             } else {
                 this.saveToFile();
             }
@@ -1430,7 +1446,7 @@ let __files = []; // same, but for opened\pasted files
         },
 
         // save archive \ temporarily loaded files (Ctrl+Shift+S)
-        saveArchive: function() {
+        saveCollection: function() {
             let data = null;
             if (__appMode == AM_FILES && __files.length) {
                 data = JSON.stringify(__files);
@@ -1489,7 +1505,7 @@ let __files = []; // same, but for opened\pasted files
                 // that's why we skipped header and make it with regular cells
                 textContent += `| | | | | |\n`;
                 textContent += "| :---: | :---: | :---: | :---: | :---: |\n";
-                textContent += `| **${stats.nettoCPM.toFixed(0)}** | **${stats.correctionSeries}** | ${stats.bruttoCPM.toFixed(0)} | ${timeStr} | ${stats.correctCount} ${(stats.errorCount)?`(+${stats.errorCount})`:''} |\n`;
+                textContent += `| **${stats.nettoCPM.toFixed(0)}** | **${stats.correctionSeries}** | ${stats.bruttoCPM.toFixed(0)} | ${timeStr} | ${stats.correctCount} ${(stats.errorCount)?`(+${stats.errorCount}‎)`:''} |\n`;
                 textContent += "| `скорость` | `ошибки` | `брутто` | `время` | `знаки` |\n\n";
                 //TODO: reset speedChart scale?
                 const pic1 = oO('wts-chart0').querySelector('canvas').toDataURL('image/webp');
@@ -1524,8 +1540,23 @@ let __files = []; // same, but for opened\pasted files
                 text: textContent,
                 hidden: isHidden,
             }));
+        },
 
+        deleteArchive: function() {
+            if (!__archive.length) {
+                showToast(TOAST_NOTHING_TO_DELETE, 'err');
+                return;
+            }
 
+            if (confirm(`${CONFIRM_DELETEARCHIVE}`)) {
+                localStorage.removeItem('WTS_ARCHIVE');
+                __InitArchive();
+                __archive = __LoadArchive();
+                if (__appMode == AM_ARCHIVE) {
+                    setAppMode(AM_EMPTY);
+                }
+                showToast(TOAST_ARCHIVE_DELETED);
+            }
         },
 
         // common function for saving files
@@ -1758,11 +1789,12 @@ let __files = []; // same, but for opened\pasted files
 
     function postInitMainWindow() {
         let mode = AM_EMPTY; // default
+        __archive = __LoadArchive();
+
         // set appMode
         if (__isInGame && localStorage.curWTS) {
             mode = AM_INGAME;
         } else {
-            __archive = JSON.parse(localStorage.getItem('WTS_ARCHIVE') || "[]").reverse();
             if (__archive.length) {
                 mode = AM_ARCHIVE;
             } else {
