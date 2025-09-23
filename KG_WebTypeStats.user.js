@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KG_WebTypeStats
 // @namespace    KG_WebTypeStats
-// @version      0.73
+// @version      0.74
 // @description  Записывает все нажатия клавиш в процессе геймплея для дальнейшего статистического анализа. Работает только с полем ввода набираемого в заезде текста.
 // @author       un4given (111001)
 // @license      GNU GPLv3
@@ -105,14 +105,14 @@ const MWC_EMPTY = 0, MWC_CHARTS = 1; // main window content types
 const META_KEY = (navigator.platform === "Win32")?'Win':((navigator.platform === "MacIntel")?'Cmd':'Meta');
 const ALT_KEY = (navigator.platform === "MacIntel")?'Opt':'Alt';
 
-const MIN_LAYOUT_DETECTION_SAMPLES = 10;
-
-const WTS_FORMAT_VERSION = 1;
-
 const CUT_START_MARK = '…]';
 const CUT_END_MARK = '[…';
+const HTML_BACKSPACE = (navigator.platform === "MacIntel")?'◄':'🠈';
 const HTML_VISIBLE_SPACE = '&#x25FB;';
 const MD_VISIBLE_SPACE = '⎵'; //␣ ˽ ⎵
+
+const WTS_FORMAT_VERSION = 1;
+const MIN_LAYOUT_DETECTION_SAMPLES = 10;
 
 const MODAL_ID = 'wts-draggable-window';
 const STORAGE_POS_KEY = 'WTS_MODAL_POSITION';
@@ -776,7 +776,7 @@ let __files = []; // same, but for opened\pasted files
             } else if (mark === 'error') {
                 textHTML += `<span class='err'>${key == ' ' ? HTML_VISIBLE_SPACE : key}</span>`;
             } else { // correction
-                textHTML += `<span class='corr' title='${delay}ms'>${key.replace(/Backspace/, '🠈')}</span>`;
+                textHTML += `<span class='corr' title='${delay}ms'>${key.replace(/Backspace/, HTML_BACKSPACE)}</span>`;
             }
 
             lastMark = mark;
@@ -1373,12 +1373,25 @@ let __files = []; // same, but for opened\pasted files
         let gameTypeStr;
 
         if (type.match(/voc-/)) {
-            const vocID = type.replace('voc-', '');
+            const vocID = type.replace('voc-', '').replace(/[^\d]+/, '');
             gameTypeStr = POPULAR_VOCS[vocID] || `Словарь #${vocID}`;
         } else {
             gameTypeStr = GAME_MODES[type] || GAME_MODES.unknown;
         }
         return gameTypeStr;
+    }
+
+    function getGameTypeMDStr(type) {
+        let gameTypeMDStr;
+
+        if (type.match(/voc-/)) {
+            const vocID = type.replace('voc-', '').replace(/[^\d]+/, '');
+            const vocTitle = (POPULAR_VOCS[vocID])? `**«${POPULAR_VOCS[vocID]}»**` : `#${vocID}`;
+            gameTypeMDStr = `Заезд по словарю [${vocTitle}](/vocs/${vocID})`;
+        } else {
+            gameTypeMDStr = `Заезд в режиме **«${GAME_MODES[type] || GAME_MODES.unknown}»**`;
+        }
+        return gameTypeMDStr;
     }
 
     function formatDecimal(f) {
@@ -1492,10 +1505,10 @@ let __files = []; // same, but for opened\pasted files
                 setIndeterminate((isHidden)?'Прячем в БЖ...':'Публикуем в БЖ...');
             }
 
-            let textContent = '';
+            let textContent = `> ${getGameTypeMDStr(lastRenderedWTS.type)}\n\n`;
 
             if (isJSON) {
-                textContent = '```\n' + JSON.stringify(lastRenderedWTS) + '\n```';
+                textContent += '```\n' + JSON.stringify(lastRenderedWTS) + '\n```';
             } else {
                 const stats = collectSpeedStats(annotatedData);
                 const timeStr = formatTime(stats.totalTimeSec, 1, true, false); //force show minutes, but do not show fraction when fraction == 0
@@ -2037,6 +2050,7 @@ let __files = []; // same, but for opened\pasted files
                     }
                 },
                 y: {
+//                    range: (self, min, max) => __isStaticYScale? [0, 1100] : [min*0.95, max*1.05],
                     range: [0, 1100],
                     font: '14px, Tahoma',
                 },
@@ -2072,7 +2086,7 @@ let __files = []; // same, but for opened\pasted files
                     font: '12px Tahoma',
                     stroke: '#888888',
                     values: (u, ticks) => ticks.map(v => `${formatTime(v, 0, true)}`),
-                    incrs:[1,2,3,4,5,10,20,30,60,120,240],
+                    incrs: [1,2,3,4,5,10,20,30,60,120,240],
                     grid: {
                         stroke: '#88888866',
                         width: 1,
