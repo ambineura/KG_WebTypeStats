@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KG_WebTypeStats
 // @namespace    KG_WebTypeStats
-// @version      0.74
+// @version      0.75
 // @description  Записывает все нажатия клавиш в процессе геймплея для дальнейшего статистического анализа. Работает только с полем ввода набираемого в заезде текста.
 // @author       un4given (111001)
 // @license      GNU GPLv3
@@ -31,6 +31,8 @@ const TYPE_TIME_HINT = 'Время набора текста';
 const CORRECT_TYPED_CHARS_HINT = 'Правильно набранные знаки';
 const INCORRECT_TYPED_CHARS_HINT = 'Ошибочно набранные знаки';
 const CLOSE_BUTTON_HINT = 'Между прочим, кнопка [Esc] тоже работает!';
+const TAB_PREV_BUTTON_HINT = 'К предыдущему представлению данных\n(«Стрелка влево» на клаве)';
+const TAB_NEXT_BUTTON_HINT = 'К следующему представлению данных\n(«Стрелка вправо» на клаве)';
 
 const WTS_PANEL_READY_HINT = 'Система записи клавожмяков готова!';
 const WTS_PANEL_RECORDING_HINT = 'Тихо! Идёт запись клавожмяков...';
@@ -104,6 +106,9 @@ const MWC_EMPTY = 0, MWC_CHARTS = 1; // main window content types
 
 const META_KEY = (navigator.platform === "Win32")?'Win':((navigator.platform === "MacIntel")?'Cmd':'Meta');
 const ALT_KEY = (navigator.platform === "MacIntel")?'Opt':'Alt';
+
+const TAB_ARROW_LEFT = (navigator.platform === "MacIntel")?'◄':'🠜';
+const TAB_ARROW_RIGHT = (navigator.platform === "MacIntel")?'►':'🠞';
 
 const CUT_START_MARK = '…]';
 const CUT_END_MARK = '[…';
@@ -766,17 +771,17 @@ let __files = []; // same, but for opened\pasted files
 
             if (mark === 'correct') {
                 if (delay && (delay < FAST_DELAY_THRESHOLD)) {
-                    textHTML += `<span class='fast' title='${delay}ms'>${key}</span>`;
-                    textHTMLClean += `<span class='c c${curCharIdx++}'><span class='fast' title='${delay}ms'>${key}</span></span>`;
+                    textHTML += `<span class='fast' title='${delay} мс'>${key}</span>`;
+                    textHTMLClean += `<span class='c c${curCharIdx++}'><span class='fast' title='${delay} мс'>${key}</span></span>`;
                 } else {
                     textHTML += key;
-                    textHTMLClean += `<span class='c c${curCharIdx++}' title='${delay}ms'>${key}</span>`;
+                    textHTMLClean += `<span class='c c${curCharIdx++}' title='${delay} мс'>${key}</span>`;
                 }
                 text += key;
             } else if (mark === 'error') {
                 textHTML += `<span class='err'>${key == ' ' ? HTML_VISIBLE_SPACE : key}</span>`;
             } else { // correction
-                textHTML += `<span class='corr' title='${delay}ms'>${key.replace(/Backspace/, HTML_BACKSPACE)}</span>`;
+                textHTML += `<span class='corr' title='${delay} мс'>${key.replace(/Backspace/, HTML_BACKSPACE)}</span>`;
             }
 
             lastMark = mark;
@@ -797,7 +802,7 @@ let __files = []; // same, but for opened\pasted files
             if (mark !== 'correct') continue;
 
             const gradIdx = (delay && delay <= cutValue)? Math.floor(delay / HISTOGRAM_BIN_SIZE) : Math.floor(HISTOGRAM_MAX_X / HISTOGRAM_BIN_SIZE);
-            textHTMLClean += `<span class="grad${gradIdx}" title="${delay}ms">${key}</span>`;
+            textHTMLClean += `<span class="grad${gradIdx}" title="${delay} мс">${key}</span>`;
         }
 
         return textHTMLClean;
@@ -998,7 +1003,28 @@ let __files = []; // same, but for opened\pasted files
 </div>
 `;
 
-        header.innerHTML = `<span class="wts-header-title"></span><span class="wts-header-info"></span><span class="wts-emptyspace"></span>${menuHTML}<span class="wts-close" title="${CLOSE_BUTTON_HINT}">&times;</span>`;
+        header.innerHTML = `
+<span class="wts-header-title"></span>
+<span class="wts-header-info"></span>
+<span class="wts-emptyspace"></span>
+<div id="wts-tab-switcher">
+  <span class="wts-tab-button inactive" data-key='ArrowLeft' title='${TAB_PREV_BUTTON_HINT}'>${TAB_ARROW_LEFT}</span>
+  <span class="wts-tab-button" data-key='ArrowRight' title='${TAB_NEXT_BUTTON_HINT}'>${TAB_ARROW_RIGHT}</span>
+</div>
+${menuHTML}
+<span class="wts-close" title="${CLOSE_BUTTON_HINT}">&times;</span>
+`;
+
+        // set handler for tab swticher
+        const ts = header.querySelector('#wts-tab-switcher');
+        ts.addEventListener('click', (e) => {
+            let key = '';
+            if (key = e.target.getAttribute('data-key')) {
+//                modal.dispatchEvent(new Event('keydown', {'key': key }));
+                console.log(key);
+                modal.dispatchEvent(new KeyboardEvent('keydown', {key}));
+            }
+        });
 
         // set handlers for each menu item, based on data-action attribute
         let links = header.querySelectorAll('.wts-menu a');
@@ -1029,16 +1055,9 @@ let __files = []; // same, but for opened\pasted files
             }
         }
 
-        header.onclick = (e) => {
-            e.preventDefault();
-            e.target.parentElement.focus();
-        }
-
         //TODO: remove in future! (or not)
         header.ondblclick = (e) => {
-            if (!['SPAN', 'DIV'].includes(e.target.nodeName)) {
-                return;
-            }
+            if (e.target.id != 'wts-header' && !e.target.classList.contains('wts-header-title')) return;
 
             if (lastRenderedWTS) {
                 navigator.clipboard.writeText(JSON.stringify(lastRenderedWTS));
@@ -1191,7 +1210,7 @@ let __files = []; // same, but for opened\pasted files
         });
 
         header.addEventListener('mousedown', (e) => {
-            if (!['SPAN', 'DIV'].includes(e.target.nodeName)) {
+            if (e.target.id != 'wts-header' && !e.target.classList.contains('wts-header-title')) {
                 return;
             }
 
@@ -1869,6 +1888,13 @@ let __files = []; // same, but for opened\pasted files
             cf.classList.toggle("active", i === index);
         });
         currentFrameIndex = index;
+        updateTabSwitcher();
+    }
+
+    function updateTabSwitcher() {
+        const ts = oO('#wts-tab-switcher');
+        ts.children[0].classList.toggle('inactive', currentFrameIndex == 0);
+        ts.children[1].classList.toggle('inactive', currentFrameIndex == chartFrames.length-1);
     }
 
     function setTextTrackers0(u) {
@@ -2428,7 +2454,7 @@ let __files = []; // same, but for opened\pasted files
                     font: '12px Tahoma',
                     stroke: '#330000cc',
                     scale: 'y',
-                    values: (u, ticks) => ticks.map(v => `${v}ms`), //disable default formatting
+                    values: (u, ticks) => ticks.map(v => `${v} мс`), //disable default formatting
                     splits: () => [0, FAST_DELAY_THRESHOLD, 50, 100, 150, 200, 250, 300],
                     grid: {
                         width: 1,
@@ -2514,7 +2540,7 @@ let __files = []; // same, but for opened\pasted files
                                 ttMagGlass.innerHTML =`
                                      <div style="display: flex; align-items: center;">
                                         <span class="wts-tt-prev-key">${prevKey}</span>
-                                        <span class="wts-tt-delay${(delay < FAST_DELAY_THRESHOLD)?' fast':''}">${delay} ms</span>
+                                        <span class="wts-tt-delay${(delay < FAST_DELAY_THRESHOLD)?' fast':''}">${delay} мс</span>
                                         <span class="wts-tt-next-key">${nextKey}</span>
                                      </div>`;
                                 ttMagGlass.style.left = `${e.clientX + 10}px`;
@@ -2702,8 +2728,8 @@ let __files = []; // same, but for opened\pasted files
                             if (idx >= 0 && idx < u.data[0].length && (u.data[1][idx] || u.data[2][idx])) {
                                 ttInfo.innerHTML =
                                     (idx<u.data[0].length-1)?
-                                    `<span>${(100*u.data[1][idx]).toFixed(1)}%</span> межклавишных пауз<br>в интервале <span>${idx*HISTOGRAM_BIN_SIZE}−${(idx+1)*HISTOGRAM_BIN_SIZE}</span> ms`:
-                                    `<span>${(100*u.data[2][idx]).toFixed(1)}%</span> выбросов, не вошедших<br>в основную гистограмму<br>(паузы >${u.data[3].toFixed(0)} ms)`;
+                                    `<span>${(100*u.data[1][idx]).toFixed(1)}%</span> межклавишных пауз<br>в интервале <span>${idx*HISTOGRAM_BIN_SIZE}−${(idx+1)*HISTOGRAM_BIN_SIZE}</span> мс`:
+                                    `<span>${(100*u.data[2][idx]).toFixed(1)}%</span> выбросов, не вошедших<br>в основную гистограмму<br>(паузы >${u.data[3].toFixed(0)} мс)`;
                                 ttInfo.style.left = `${e.clientX + 10}px`;
                                 ttInfo.style.top = `${e.clientY + 10}px`;
                                 ttInfo.style.display = "block";
@@ -3076,7 +3102,6 @@ const Stat = {
         color: #888888;
         cursor: pointer;
         margin-left: 10px;
-        width: 28px;
         text-align: center;
     }
 
@@ -3087,7 +3112,7 @@ const Stat = {
     #${MODAL_ID} .wts-close {
         font-size: 32px;
         line-height: 24px;
-        color: #888;
+        color: #888888;
         cursor: pointer;
         margin-left: 10px;
         width: 40px;
@@ -3117,6 +3142,7 @@ const Stat = {
         white-space: nowrap;
         z-index: 1000;
         overflow: hidden;
+        cursor: default;
     }
 
     #${MODAL_ID} .wts-menu-header {
@@ -3143,6 +3169,32 @@ const Stat = {
     /* магия hover */
     #${MODAL_ID} .wts-menu-wrapper:hover .wts-menu {
         display: block;
+    }
+
+    #${MODAL_ID} #wts-tab-switcher {
+        background: #ffffff;
+        margin: 0 24px -20px 24px;
+        border-radius: 10px 10px 0 0;
+        cursor: default;
+    }
+
+    #${MODAL_ID} .wts-tab-button {
+        font-size: 16px;
+        line-height: 24px;
+        color: var(--base-color);
+        cursor: pointer;
+        text-align: center;
+        display: inline-block;
+        width: 30px;
+    }
+
+    #${MODAL_ID} .wts-tab-button:hover {
+        color: #000000;
+    }
+
+    #${MODAL_ID} .wts-tab-button.inactive {
+        color: #aaaaaa;
+        pointer-events: none;
     }
 
     #${MODAL_ID} .wts-content {
@@ -3338,8 +3390,8 @@ const Stat = {
     }
 
     #hide-err + label {
-        background-color: #ff8d7b;
-        color: #ffffff;
+        background-color: #ffaa99;
+        color: #330000;
     }
 
     #hide-corr + label {
