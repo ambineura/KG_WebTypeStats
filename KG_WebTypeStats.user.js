@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KG_WebTypeStats
 // @namespace    KG_WebTypeStats
-// @version      0.75
+// @version      0.76
 // @description  Записывает все нажатия клавиш в процессе геймплея для дальнейшего статистического анализа. Работает только с полем ввода набираемого в заезде текста.
 // @author       un4given (111001)
 // @license      GNU GPLv3
@@ -118,6 +118,7 @@ const MD_VISIBLE_SPACE = '⎵'; //␣ ˽ ⎵
 
 const WTS_FORMAT_VERSION = 1;
 const MIN_LAYOUT_DETECTION_SAMPLES = 10;
+const MIN_LIST_ELEMENTS_TO_SHOW_PROGRESS = 3;
 
 const MODAL_ID = 'wts-draggable-window';
 const STORAGE_POS_KEY = 'WTS_MODAL_POSITION';
@@ -683,7 +684,7 @@ let __files = []; // same, but for opened\pasted files
         const idxStart = range?.idxStart || 0;
         const idxEnd = range?.idxEnd || correct.length - 1;
 
-        const isPartial = (range)? (correct.length != (range.idxEnd - range.idxStart + 1)) : false;
+        const isPartial = (range)? (correct.length !== (idxEnd - idxStart + 1)) : false;
         let totalTime = 0;
 
         if (!isPartial) {
@@ -1020,8 +1021,6 @@ ${menuHTML}
         ts.addEventListener('click', (e) => {
             let key = '';
             if (key = e.target.getAttribute('data-key')) {
-//                modal.dispatchEvent(new Event('keydown', {'key': key }));
-                console.log(key);
                 modal.dispatchEvent(new KeyboardEvent('keydown', {key}));
             }
         });
@@ -1030,6 +1029,8 @@ ${menuHTML}
         let links = header.querySelectorAll('.wts-menu a');
         for (let link of links) {
             link.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 const action = e.target.getAttribute('data-action');
 
                 if (action) {
@@ -1038,8 +1039,6 @@ ${menuHTML}
                     } else {
                         showToast('Not implemented yet', 'err');
                     }
-                    e.preventDefault();
-                    e.stopPropagation();
                 }
 
                 //magic! © mr Bean
@@ -1093,7 +1092,7 @@ ${menuHTML}
         fileOpener.id = 'fileOpener';
         fileOpener.type = 'file';
         fileOpener.multiple = true;
-        fileOpener.accept = '.wts,.wtsa';
+        fileOpener.accept = '.wts,.wtsa,.tsf';
 
         fileOpener.addEventListener('change', async (e) => {
             let fileList = e.target.files;
@@ -1114,29 +1113,46 @@ ${menuHTML}
 
             showOverlay();
             setIndeterminate();
-            const fileArray = Array.from(fileList);
 
-            const filteredFileArray = fileArray.filter(f=>{
+            const filteredFileArray = Array.from(fileList).filter(f=>{
                 const ext = f.name.split('.').pop();
-                return ['wts', 'wtsa'].includes(ext);
+                return ['wts', 'wtsa', 'tsf'].includes(ext);
             });
 
             let totalFiles = filteredFileArray.length;
             let processedFiles = 0;
 
-            const processingPromises = Array.from(fileList).map(async (file) => {
+            const processingPromises = filteredFileArray.map(async (file) => {
                 const reader = new FileReader();
                 const promise = new Promise((resolve) => {
                     reader.onload = (e) => resolve(e.target.result);
                     reader.readAsText(file);
                 });
+
+                const fileExt = file.name.split('.').pop().toLowerCase();
                 const content = await promise;
                 try {
-                    let jsonData = JSON.parse(content);
-                    if (Array.isArray(jsonData)) {
-                        __files.push(...jsonData);
-                    } else {
-                        __files.push(jsonData);
+                    let jsonData, tsfAllData, tsfData, tsfParams, wtsData;
+                    switch (fileExt) {
+                        case 'wts':
+                        case 'wtsa':
+                            jsonData = JSON.parse(content);
+                            if (Array.isArray(jsonData)) {
+                                __files.push(...jsonData);
+                            } else {
+                                __files.push(jsonData);
+                            }
+                            break;
+
+                        case 'tsf':
+                            tsfAllData = content.split('\n');
+                            tsfData = tsfAllData.filter(item => item.match(/[0-9a-f]{8}\s[0-9a-f]{12}/i));
+                            tsfParams = tsfAllData.filter(item => item.match(/^[0-9a-z]+\=/i));
+                            wtsData = FileImport.TSFdata2WTSdata(tsfData);
+                            for (const tmpData of wtsData) {
+                                __files.push(createWTSfromData(tmpData));
+                            }
+                            break;
                     }
                     processedFiles++;
                 } catch(e) {
@@ -1285,12 +1301,13 @@ ${menuHTML}
                     __appMode = AM_ARCHIVE;
                     setWindowHeaderTitle(`📜 Архив: `);
 
-                    const selectorHTML = createWTSListElement('archive', __archive, 'date');
-                    setWindowHeaderInfo(selectorHTML, true);
+                    const selWithProgressHTML = createWTSListWithProgressElement('archive', __archive, 'date');
+                    setWindowHeaderInfo(selWithProgressHTML, true);
 
                     // set onchange event on newly created selector
                     const sel = oO('#wts-archive-list');
                     sel.onchange = (e) => {
+                        updateListProgress(e.target);
                         renderWTSCharts(__archive[e.target.value]);
                     };
 
@@ -1308,12 +1325,13 @@ ${menuHTML}
                     __appMode = AM_FILES;
                     setWindowHeaderTitle(`📂 Загруженное: `);
 
-                    const selectorHTML = createWTSListElement('file', __files, null);
-                    setWindowHeaderInfo(selectorHTML, true);
+                    const selWithProgressHTML = createWTSListWithProgressElement('file', __files, null);
+                    setWindowHeaderInfo(selWithProgressHTML, true);
 
                     // set onchange event on newly created selector
                     const sel = oO('#wts-file-list');
                     sel.onchange = (e) => {
+                        updateListProgress(e.target);
                         renderWTSCharts(__files[e.target.value]);
                     };
 
@@ -1836,13 +1854,13 @@ ${menuHTML}
         setAppMode(mode);
     }
 
-    function createWTSListElement(id, archive, delimiter='date') {
+    function createWTSListElement(id, source, delimiter='date') {
         let selectHTML = `<select id='wts-${id}-list'>`;
 
         let i = 0;
         const dateOpts = {month: 'long', day: 'numeric'};
         let prevDate = new Date().toLocaleDateString('ru-RU', dateOpts);
-        for (let wts of archive) {
+        for (let wts of source) {
             const datetime = new Date(wts.time)
             const date = datetime.toLocaleDateString('ru-RU', dateOpts);;
             const time = datetime.toLocaleTimeString().substr(0, 5);
@@ -1872,6 +1890,24 @@ ${menuHTML}
         }
         selectHTML += '</select>';
         return selectHTML;
+    }
+
+    function createWTSListWithProgressElement(id, source, delimiter='date') {
+        const selectorHTML = createWTSListElement(id, source, delimiter);
+        return `
+<div style="margin-left: 4px; display: flex; flex-direction: column;">
+  ${selectorHTML}
+  <div id="wts-list-progress"></div>
+</div>
+`;
+    }
+
+    function updateListProgress(list) {
+        const count = (list.options)? list.options[list.options.length-1].value : 0; //not ACTUAL count, but last index of zero-based array of elements
+        if (count >= MIN_LIST_ELEMENTS_TO_SHOW_PROGRESS - 1) {
+            const progress = (count)? (list.value/count * 100).toFixed(1) : 0;
+            oO('#wts-list-progress').style.width = `${progress}%`;
+        }
     }
 
     // --- uPlot FUNCTIONS --- //
@@ -1967,12 +2003,16 @@ ${menuHTML}
         ];
         let contentHTML = '';
 
-        for (let p of params) {
-            const val = (p[3]=='%')?`${(stats[p[0]].val*100).toFixed(p[1])}` : stats[p[0]].val.toFixed(p[1]);
-            const descr = stats[p[0]].descr || '';
-            const hint = stats[p[0]].hint || '';
-            const name = p[2]? p[2] : p[0];
-            contentHTML += `<div title="${descr}"><span title="${hint}">${val}${((p[3])?p[3]:'')}</span>${name}</div>`;
+        if (stats) {
+            for (let p of params) {
+                const val = (p[3]=='%')?`${(stats[p[0]].val*100).toFixed(p[1])}` : stats[p[0]].val.toFixed(p[1]);
+                const descr = stats[p[0]].descr || '';
+                const hint = stats[p[0]].hint || '';
+                const name = p[2]? p[2] : p[0];
+                contentHTML += `<div title="${descr}"><span title="${hint}">${val}${((p[3])?p[3]:'')}</span>${name}</div>`;
+            }
+        } else {
+            contentHTML = '<div><span>Недостаточно данных для отображения статистической информации.</span>Если вы считаете, что это ошибка − обратитесь к разработчику.</div>';
         }
 
         oO('#wts-stats2').innerHTML = contentHTML;
@@ -2026,15 +2066,18 @@ ${menuHTML}
         const opts0 = getSpeedChartOpts();
         const data0 = getSpeedChartData(annotatedData);
 
-        if (SPEEDCHART_Y_SCALE == 'dynamic') {
+        //TODO: remake this later
+        if (SPEEDCHART_Y_SCALE == 'dynamic' || Math.max(...data0[2]) > 1100) {
+            //switch to dynamic mode
             delete opts0.axes[1].splits;
             delete opts0.axes[1].values;
             delete opts0.axes[2].splits;
             delete opts0.axes[2].values;
-            opts0.axes[1].incrs=opts0.axes[2].incrs=[10, 25, 50, 100, 150, 200];
+            opts0.axes[1].incrs=opts0.axes[2].incrs=[10, 20, 30, 40, 50, 100, 150, 200];
             opts0.axes[1].space=opts0.axes[2].space=20;
             opts0.scales.y.range = [Math.min(...data0[2])*0.95, Math.max(...data0[2])*1.05];
             opts0.scales.y.auto=true;
+            opts0.series[1].show = false;
         }
         Charts.push( new uPlot(opts0, data0, oO('#wts-chart0')) );
 
@@ -2086,7 +2129,7 @@ ${menuHTML}
                 },
                 {
                     //label: "Мгновенная скорость, зн/мин",
-                    show: SPEEDCHART_Y_SCALE == 'static',
+                    show: true,
                     stroke: '#cccccc',
                     fill: '#eeeeee',
                     width: 1,
@@ -2593,7 +2636,7 @@ ${menuHTML}
                                 spans[i].classList.add('wts-track-hide');
                             }
                             if (i == idxStart - 2) spans[i].classList.add('wts-track-start');
-                            if (i == idxEnd + 1) spans[i].classList.add('wts-track-end');
+                            if (i > 1 && i == idxEnd + 1) spans[i].classList.add('wts-track-end');
                         }
                     }
                 ]
@@ -2794,7 +2837,10 @@ ${menuHTML}
             }
         }
 
-        const { bins, outliers, cutValue } = Stat.prepareHistogramData(delays, {fixedBinSize:HISTOGRAM_BIN_SIZE, percentileCut: 0.97});
+        const histData = Stat.prepareHistogramData(delays, {fixedBinSize:HISTOGRAM_BIN_SIZE, percentileCut: 0.97});
+        if (!histData) return {data: [], cutValue: 0}
+
+        const { bins, outliers, cutValue } = histData;
 
         const binLength = bins.x.length;
         const maxLength = Math.floor(HISTOGRAM_MAX_X / HISTOGRAM_BIN_SIZE) + 1;
@@ -2838,7 +2884,6 @@ ${menuHTML}
 
     window.showWTS = showWTS;
 
-
 const Stat = {
     prepareHistogramData: function(values, options = {}) {
         const {
@@ -2853,7 +2898,7 @@ const Stat = {
         // 1. Сортировка
         let data = values.slice().sort((a, b) => a - b);
         const n = data.length;
-        if (n < 2) return { bins: [], binSize: 0, outliers: [], cutValue: null };
+        if (n < 2) return null;
 
         // 2. Верхняя граница (если нет fixedRange)
         let cutValue;
@@ -2991,6 +3036,37 @@ const Stat = {
     }
 };
 
+const FileImport = {
+    TSFdata2WTSdata: function(lines) {
+        const RESET_DELAY = 2000*1000;
+        const MIN_TSF_LENGTH_TO_SAVE = 5;
+        const subst = {'0008':'Backspace', '0009':'Tab', '007F':'Ctrl+Backspace'};
+        const result = [];
+        let wtsData = [];
+        let diff = 0;
+        for (let line of lines) {
+            const [timestamp, data] = line.trim().split(' ');
+            const delay = parseInt(timestamp, 16);
+
+            if (delay > RESET_DELAY) {
+                if (wtsData.length && wtsData.length >= MIN_TSF_LENGTH_TO_SAVE) result.push(wtsData);
+                wtsData = [];
+                diff = 0;
+            }
+
+            const keyCodeHex = data.slice(0, 4);
+            const keyCode = parseInt(keyCodeHex, 16);
+            if (wtsData.length) diff += delay; // accumulate delays of non-printable keypresses
+            if (keyCode == 0) continue;
+            const key = subst[keyCodeHex] || String.fromCodePoint(keyCode);
+            wtsData.push({[key]: diff/1000})
+            diff = 0;
+        }
+        if (wtsData.length && wtsData.length >= MIN_TSF_LENGTH_TO_SAVE) result.push(wtsData);
+        return result;
+    }
+}
+
 // --- !!! no significant code below this line, only auxiliary functions !!! ---
 
 // --- CSS ---
@@ -3085,11 +3161,17 @@ const Stat = {
     }
     #${MODAL_ID} .wts-header select {
         font-size: 16px;
-        margin-left: 4px;
         color: #333333;
         outline: none;
         padding-right: 10px;
         padding-bottom: 1px;
+    }
+
+    #wts-list-progress {
+        height: 2px;
+        margin-bottom: -2px;
+        width: 0%;
+        background-color: #aaaaaa;
     }
 
     #${MODAL_ID} .wts-emptyspace {
