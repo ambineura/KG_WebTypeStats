@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KG_WebTypeStats
 // @namespace    KG_WebTypeStats
-// @version      0.76
+// @version      0.77
 // @description  Записывает все нажатия клавиш в процессе геймплея для дальнейшего статистического анализа. Работает только с полем ввода набираемого в заезде текста.
 // @author       un4given (111001)
 // @license      GNU GPLv3
@@ -55,6 +55,7 @@ const TOAST_ARCHIVE_DELETED = 'Архив статистики удалён!';
 const MENU_OPENFILE_HINT = "Открыть файл с WTS-кой (можно несколько) или архив целиком.\nЕсли кликать с Shift'ом, то открываемые файлы будут добавляться к загруженным ранее.";
 const MENU_SAVEFILE_HINT = 'Сохранить текущую WTS-ку в файл.';
 const MENU_SAVECOLLECTION_HINT = 'Сохранить всю коллекцию WTS-ок из архива или из загруженных файлов.';
+const MENU_EXPORTWORDSTATS_HINT = "Экспортировать статистику скорости набора слов в .CSV-формате.\nКлик с Shift'ом − группировать одинаковые слова и усреднять cpm.\nКлик с Ctrl'ом − не экспортировать слова с ошибками.";
 const MENU_PUBLISHBLOG_HINT = "Опубликовать текущую WTS-ку в бортжурналe.\nЕсли кликать с Shift'ом, то запись будет публичной, иначе − скрытой.\nКлик с Alt'ом − опубликовать в формате JSON.";
 const MENU_DELETEARCHIVE_HINT = "Удалить весь архив статистики заездов";
 const MENU_HELP_HINT = "Отправиться в БЖ к унчу за FAQ'ом/обсуждениями";
@@ -75,15 +76,14 @@ const GAME_MODES = {
     unknown: 'Неведома зверушка',
 };
 
-//
-const POPULAR_VOCS = {
-    192: 'Частотка',
-    1789: 'Короткие тексты',
-    5539: 'English',
-    6018: 'Миник',
-    25856: 'Соточка',
-    // continue yourself
+// you stil may add custom vocabulary titles, which will overwrite default ones (if present)
+const CUSTOM_VOCS = {
+//     5539: 'Английская обычка',
+//    25856: 'Сотка',
+// ...and so on
 };
+
+const POPULAR_VOCS = Object.assign(getFamiliarVocs(), CUSTOM_VOCS);
 
 const FAST_DELAY_THRESHOLD = 15; // (in ms!): all delays below this threshold will be marked yellow in text
 const DISABLE_CTRL_SHORTCUTS = false; // disable all Ctrl+[anykey (except 'A') \ anydigit] while in-game typing
@@ -115,10 +115,12 @@ const CUT_END_MARK = '[…';
 const HTML_BACKSPACE = (navigator.platform === "MacIntel")?'◄':'🠈';
 const HTML_VISIBLE_SPACE = '&#x25FB;';
 const MD_VISIBLE_SPACE = '⎵'; //␣ ˽ ⎵
+const ERROR_MARK = 'x'; //used in Export Word Stats
 
 const WTS_FORMAT_VERSION = 1;
 const MIN_LAYOUT_DETECTION_SAMPLES = 10;
 const MIN_LIST_ELEMENTS_TO_SHOW_PROGRESS = 3;
+const MAX_WTSLIST_TITLE_LEN = 30;
 
 const MODAL_ID = 'wts-draggable-window';
 const STORAGE_POS_KEY = 'WTS_MODAL_POSITION';
@@ -216,6 +218,11 @@ const ColorUtils = {
 const __InitArchive = () => {localStorage.WTS_ARCHIVE = JSON.stringify([])};
 const __LoadArchive = () => JSON.parse(localStorage.getItem('WTS_ARCHIVE') || "[]").reverse();
 
+const __toFixed0 = (v) => Math.trunc(v+0.5);
+const __toFixed1 = (v) => Math.trunc(v*10+0.5)/10;
+const __toFixed2 = (v) => Math.trunc(v*100+0.5)/100;
+const __toFixed3 = (v) => Math.trunc(v*1000+0.5)/1000;
+
 let __appMode = AM_EMPTY;
 
 let __WTSData = [];
@@ -273,7 +280,11 @@ let __files = []; // same, but for opened\pasted files
     ['#userpanel-level-container', '#stats-block'].forEach(id => {
         const el = document.body.querySelector(id);
         if (el) {
-            el.onclick = (e) => {if (!['A', 'SELECT', 'OPTION'].includes(e.target.nodeName)) showWTS()};
+            if (id == '#stats-block') {
+                el.onclick = (e) => {if (e.target.closest('td').cellIndex !== 0) showWTS()};
+            } else {
+                el.onclick = (e) => {if (!['A', 'SELECT', 'OPTION'].includes(e.target.nodeName)) showWTS()};
+            }
         }
     });
 
@@ -311,6 +322,10 @@ let __files = []; // same, but for opened\pasted files
 </div>`;
 
                 params.parentNode.insertBefore(panel, params.nextSibling);
+
+                panel.querySelector('h4').addEventListener("click", (e) => {
+                    showWTS();
+                });
             }
 
         }, 500);
@@ -345,6 +360,8 @@ let __files = []; // same, but for opened\pasted files
             if (['Meta', 'Shift', 'Control', 'Alt'].includes(e.key)) return;
             //skip Alt + [any printable character]
             if (e.altKey && e.key.length == 1) return;
+            //skip Alt + Shift + Backspace
+            if (e.altKey && e.shiftKey && e.key === 'Backspace') return;
 
             //disable ctrl+[b-z0-9\-\=] shortcuts, if needed
             //awsh~~, Ctrl+W can not be disabled this way :(
@@ -385,18 +402,22 @@ let __files = []; // same, but for opened\pasted files
                 let key = e.key; // assign to Event.key by default, but we may change it later in some cases
 
                 // preprocess special combinations before saving (like ctrl+backspace, ctrl+a, shift+home, etc)
-                if (e.ctrlKey && (e.code === 'KeyA')) {
-                    prefix = 'Ctrl+';
-                    key = `A:${e.target.value.length}`; //experimental feature for future use
+                if ((e.ctrlKey || e.metaKey) && e.code === 'KeyA') {
+                    prefix = e.ctrlKey ? 'Ctrl+' : 'Cmd+';
+                    key = `A:${e.target.value.length}`;
                 } else if ((e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) && ['Backspace', 'Delete', 'Home', 'End', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
                     if (e.metaKey)  prefix += `${META_KEY}+`;
                     if (e.ctrlKey)  prefix += 'Ctrl+';
                     if (e.altKey)   prefix += `${ALT_KEY}+`;
                     if (e.shiftKey) prefix += 'Shift+';
+
+                    if (prefix === 'Cmd+' && key === 'Backspace') {
+                        key = `${key}:${e.target.value.length}`;
+                    }
                 }
 
                 __WTSData.push({
-                    [prefix + key]: Math.trunc((MS - lastMS)*1000+0.5)/1000
+                    [prefix + key]: __toFixed3(MS - lastMS)
                 });
             }
 
@@ -553,6 +574,7 @@ let __files = []; // same, but for opened\pasted files
         });
 
         const history = [];
+        const skip = h => h.deleted || h.mark === 'correction';
 
         for (let i = 0; i < flat.length; i++) {
             const entry = flat[i];
@@ -561,15 +583,15 @@ let __files = []; // same, but for opened\pasted files
             if (key === 'Backspace' || key === 'Shift+Backspace') {
                 // Удаляем последний не-deleted символ (исключая correction)
                 for (let j = history.length - 1; j >= 0; j--) {
-                    if (!history[j].deleted && history[j].mark !== 'correction') {
+                    if (!skip(history[j])) {
                         history[j].deleted = true;
                         break;
                     }
                 }
                 entry.mark = 'correction';
+
             } else if (key === 'Ctrl+Backspace' || key === 'Opt+Backspace') {
                 let j = history.length - 1;
-                const skip = h => h.deleted || h.mark === 'correction';
 
                 // Юникод-«слово»: буквы (включая кириллицу), цифры, подчёркивание
                 const isSpace = k => k === ' ';
@@ -609,6 +631,40 @@ let __files = []; // same, but for opened\pasted files
                 }
 
                 entry.mark = 'correction';
+
+            } else if (key.startsWith('Cmd+Backspace:')) {
+                let charsToDel = +(key.split(':')[1]) || 0;
+                if (charsToDel) {
+                    let j = history.length - 1;
+                    while (charsToDel) {
+                        while (j >= 0 && skip(history[j])) j--;
+                        history[j].deleted = true;
+                        j--;
+                        charsToDel--;
+                    }
+                }
+
+                entry.mark = 'correction';
+
+            } else if (key.startsWith('Ctrl+A:') || key.startsWith('Cmd+A:')) {
+                let charsToDel = +(key.split(':')[1]) || 0;
+                if (charsToDel && i+1 < flat.length && (flat[i+1].key.length === 1 || ['Backspace', 'Delete'].includes(flat[i+1].key))) {
+                    let j = history.length - 1;
+                    while (charsToDel) {
+                        while (j >= 0 && skip(history[j])) j--;
+                        history[j].deleted = true;
+                        j--;
+                        charsToDel--;
+                    }
+
+                    if (flat[i+1].key.length !== 1) {
+                        flat[i+1].mark = 'control';
+                        i+=1;
+                    }
+                }
+
+                entry.mark = 'correction';
+
             } else if (key.length === 1) {
                 // Буква или пробел
                 history.push(entry);
@@ -782,7 +838,13 @@ let __files = []; // same, but for opened\pasted files
             } else if (mark === 'error') {
                 textHTML += `<span class='err'>${key == ' ' ? HTML_VISIBLE_SPACE : key}</span>`;
             } else { // correction
-                textHTML += `<span class='corr' title='${delay} мс'>${key.replace(/Backspace/, HTML_BACKSPACE)}</span>`;
+                let corr = key;
+                if (corr.length > 1) {
+                    if (corr.includes('Backspace')) corr = corr.replace('Backspace', HTML_BACKSPACE);
+                    let i = corr.indexOf(':');
+                    corr = (i > 0) ? corr.slice(0, i) : corr;
+                }
+                textHTML += `<span class='corr' title='${delay} мс'>${corr}</span>`;
             }
 
             lastMark = mark;
@@ -818,6 +880,65 @@ let __files = []; // same, but for opened\pasted files
             hash |= 0;
         }
         return hash >>> 0;
+    }
+
+    function collectWordSpeedStats(flat, includePreDelay = true, minWordLen = 3) {
+        const wordsSegments = [];
+        let current = null;
+
+        const isPrintable = e => typeof e.key === 'string' && e.key.length === 1;
+        const isSpace = e => e.key === ' ' || e.key === 'Space';
+
+        // Разделяем поток на слова
+        for (let i = 0; i < flat.length; i++) {
+            const e = flat[i];
+
+            if (isSpace(e) && !e.deleted) {
+                if (current) {
+                    wordsSegments.push(current);
+                    current = null;
+                }
+            } else if (isPrintable(e)) {
+                if (!current) current = { entries: [] };
+                current.entries.push({ ...e, idx: i });
+            }
+        }
+        if (current) wordsSegments.push(current);
+
+        const result = [];
+
+        for (const seg of wordsSegments) {
+            const entriesAll = seg.entries;
+            const entriesFinal = entriesAll.filter(x => !x.deleted && x.key !== ' ');
+
+            if (entriesFinal.length === 0) continue;
+            if (entriesFinal.length < minWordLen) continue;
+
+            const word = entriesFinal.map(x => x.key).join('');
+
+            // диапазон должен включать все опечатки и исправления
+            const startIdx = entriesAll[0].idx;
+            const endIdx = entriesAll[entriesAll.length - 1].idx;
+
+            // Подсчёт времени
+            let time = 0;
+            const startOffset = includePreDelay ? 0 : 1;
+
+            for (let j = startIdx + startOffset; j <= endIdx; j++) {
+                time += flat[j].delay;
+            }
+            if (time <= 0) continue;
+
+//            const cpm = Math.trunc(((entriesFinal.length * 60000) / time)*100+0.5)/100;
+            const cpm = ((entriesFinal.length * 60000) / time).toFixed(0);
+
+            // Ошибочность — если есть хоть одна удалённая буква или метка 'error'
+            const hasError = (entriesAll.some(x => x.deleted) || entriesAll.some(x => x.mark === 'error'))? ERROR_MARK : '';
+
+            result.push({ cpm, word, time: +time.toFixed(1), hasError });
+        }
+
+        return result;
     }
 
     // --- DRAGGABLE MODAL WINDOW FUNCTIONS --- //
@@ -990,12 +1111,13 @@ let __files = []; // same, but for opened\pasted files
   <span class="wts-button">☰</span>
   <div class="wts-menu">
 	<div class="wts-menu-header">Чего изволите?</div>
+	<a href="#" data-action="publishToBlog" title="${MENU_PUBLISHBLOG_HINT}">Опубликовать в БЖ</a>
+    <hr>
 	<a href="#" data-action="openFile" title="${MENU_OPENFILE_HINT}">Открыть...</a>
 	<hr>
 	<a href="#" data-action="saveToFile" title="${MENU_SAVEFILE_HINT}">Сохранить файл</a>
 	<a href="#" data-action="saveCollection" title="${MENU_SAVECOLLECTION_HINT}">Сохранить коллекцию</a>
-    <hr>
-	<a href="#" data-action="publishToBlog" title="${MENU_PUBLISHBLOG_HINT}">Опубликовать в БЖ</a>
+	<a href="#" data-action="exportWordSpeedStats" title="${MENU_EXPORTWORDSTATS_HINT}">Экспортировать статистику слов</a>
     <hr>
 	<a href="#" data-action="deleteArchive" title="${MENU_DELETEARCHIVE_HINT}">Удалить архив</a>
     <hr>
@@ -1406,12 +1528,25 @@ ${menuHTML}
         fillEl.style.width = percent + "%";
     }
 
+    function getFamiliarVocs() {
+        const vocs = {};
+
+        // populate popular_vocs
+        document.querySelectorAll('#gametype-select option[value^="voc-"]').forEach(optEl => {
+            const key = optEl.value.replace(/voc-/, '');
+            const value = optEl.innerText.replace(/\s\(\d+\)$/, '');
+            vocs[key] = value;
+        });
+
+        return vocs;
+    }
+
     function getGameTypeStr(type) {
         let gameTypeStr;
 
         if (type.match(/voc-/)) {
             const vocID = type.replace('voc-', '').replace(/[^\d]+/, '');
-            gameTypeStr = POPULAR_VOCS[vocID] || `Словарь #${vocID}`;
+            gameTypeStr = (POPULAR_VOCS[vocID])? `«${POPULAR_VOCS[vocID]}»` : `Словарь #${vocID}`;
         } else {
             gameTypeStr = GAME_MODES[type] || GAME_MODES.unknown;
         }
@@ -1423,10 +1558,10 @@ ${menuHTML}
 
         if (type.match(/voc-/)) {
             const vocID = type.replace('voc-', '').replace(/[^\d]+/, '');
-            const vocTitle = (POPULAR_VOCS[vocID])? `**«${POPULAR_VOCS[vocID]}»**` : `#${vocID}`;
-            gameTypeMDStr = `Заезд по словарю [${vocTitle}](/vocs/${vocID})`;
+            const vocTitle = (POPULAR_VOCS[vocID])? `«${POPULAR_VOCS[vocID]}»` : `Словарь #${vocID}`;
+            gameTypeMDStr = `[${vocTitle}](/vocs/${vocID})`;
         } else {
-            gameTypeMDStr = `Заезд в режиме **«${GAME_MODES[type] || GAME_MODES.unknown}»**`;
+            gameTypeMDStr = `${GAME_MODES[type] || GAME_MODES.unknown}`;
         }
         return gameTypeMDStr;
     }
@@ -1514,6 +1649,73 @@ ${menuHTML}
             this._saveFile(data, fileName);
         },
 
+        exportWordSpeedStats: function (e) {
+            let data = null;
+            if (__appMode == AM_FILES && __files.length) {
+                data = __files;
+            } else if (__appMode == AM_ARCHIVE && __archive.length) {
+                data = __archive;
+            } else {
+                data = [lastRenderedWTS];
+            }
+
+            let result = [];
+            for (let wts of data) {
+                const tmpAnnotated = annotateKeypresses(wts.data);
+                const wordStat = collectWordSpeedStats(tmpAnnotated);
+                result.push(...wordStat);
+            }
+
+            if (!result.length) {
+                showToast(TOAST_NOTHING_TO_SAVE, 'err');
+                return;
+            }
+
+            if (e.shiftKey) {
+                // group by words and calculate average cpm per word
+                // (group error and non-error words separately!)
+                const words = Object.create(null);
+                const errWords = Object.create(null);
+                for (let statData of result) {
+                    const { cpm, word, hasError } = statData;
+                    let wordsObj = hasError ? errWords : words;
+                    if (!wordsObj[word]) {
+                        wordsObj[word] = {
+                            avg: +cpm,
+                            cnt: 1
+                        }
+                        continue;
+                    }
+                    const s = wordsObj[word];
+                    s.cnt++;
+                    s.avg += (cpm - s.avg) / s.cnt;
+                }
+
+                // reconstruct result back:
+                result = Object.entries(errWords).map(([word, s]) => ({
+                    cpm: s.avg.toFixed(0),
+                    word,
+                    hasError: ERROR_MARK
+                })).concat(Object.entries(words).map(([word, s]) => ({
+                    cpm: s.avg.toFixed(0),
+                    word,
+                    hasError: ''
+                })));
+            }
+
+            result.sort((a, b) => a.cpm - b.cpm);
+
+            // export CSV file
+            let CSVcontent = `;${(e.shiftKey)?'avg_':''}cpm\tword\thasError\n`;
+            for (let statData of result) {
+                const { cpm, word, hasError } = statData;
+                if (e.ctrlKey && hasError) continue;
+                CSVcontent += [cpm, word, hasError].join('\t') + '\n';
+            }
+
+            this._saveFile(CSVcontent, 'wordstat.csv');
+        },
+
         // publish currently rendered WTS to blog (Ctrl+B → hidden post, Ctrl+Shift+B → public post)
         publishToBlog: function (e) {
             function getCookie(name) {
@@ -1542,12 +1744,14 @@ ${menuHTML}
                 setIndeterminate((isHidden)?'Прячем в БЖ...':'Публикуем в БЖ...');
             }
 
-            let textContent = `> ${getGameTypeMDStr(lastRenderedWTS.type)}\n\n`;
+            const stats = collectSpeedStats(annotatedData);
+
+            // header should not be greater than 45 chars, or it will be stripped on main page
+            let textContent = `> ${stats.nettoCPM.toFixed(0)} зн/мин − ${getGameTypeMDStr(lastRenderedWTS.type)}\n\n`;
 
             if (isJSON) {
                 textContent += '```\n' + JSON.stringify(lastRenderedWTS) + '\n```';
             } else {
-                const stats = collectSpeedStats(annotatedData);
                 const timeStr = formatTime(stats.totalTimeSec, 1, true, false); //force show minutes, but do not show fraction when fraction == 0
                 const texts = buildText(annotatedData);
 
@@ -1886,7 +2090,11 @@ ${menuHTML}
             // sanitize wts.type for preventing possible XSS
             let classNamePostfix = wts.type.split('-')[0];
             if (classNamePostfix != 'voc' && !GAME_MODES[classNamePostfix]) classNamePostfix = 'normal';
-            selectHTML += `<option class='gametype-${classNamePostfix}' value='${i++}' title='${time}\n${date}'>${i}. ${getGameTypeStr(wts.type)}${isQual?'*':''} ${stats.nettoCPM.toFixed(0)}/${stats.correctionSeries}</option>`;
+            let title = getGameTypeStr(wts.type);
+            if (title.length > MAX_WTSLIST_TITLE_LEN) {
+                title = `${title.substr(0, MAX_WTSLIST_TITLE_LEN-5)}…${title.substr(-5)}`;
+            }
+            selectHTML += `<option class='gametype-${classNamePostfix}' value='${i++}' title='${time}\n${date}'>${i}. ${title}${isQual?'*':''} ${stats.nettoCPM.toFixed(0)}/${stats.correctionSeries}</option>`;
         }
         selectHTML += '</select>';
         return selectHTML;
@@ -2558,13 +2766,13 @@ ${menuHTML}
                     (u) => {
                         setTextTrackers1(u);
 
-                        const ttInfo = document.getElementById('wts-chart-tooltip') || document.createElement("div");
+                        const ttInfo = oO('#wts-chart-tooltip') || document.createElement("div");
                         ttInfo.id = 'wts-chart-tooltip';
                         ttInfo.className = 'wts-chart-tooltip';
                         ttInfo.style.display = "none";
                         document.body.appendChild(ttInfo);
 
-                        const ttMagGlass = document.getElementById('wts-chart-mag-glass') || document.createElement("div");
+                        const ttMagGlass = oO('#wts-chart-mag-glass') || document.createElement("div");
                         ttMagGlass.id = 'wts-chart-mag-glass';
                         ttMagGlass.className = 'wts-chart-tooltip';
                         ttMagGlass.style.display = "none";
@@ -2579,7 +2787,7 @@ ${menuHTML}
                             if (idx > 0 && idx < u.data[0].length) {
                                 const prevKey = `&nbsp;${u.data[3][idx-1] == ' ' ? '&nbsp;' : u.data[3][idx-1]}&nbsp;`;
                                 const nextKey = `&nbsp;${u.data[3][idx] == ' ' ? '&nbsp;' : u.data[3][idx]}&nbsp;`;
-                                const delay = parseInt(u.data[1][idx].toFixed(0));
+                                const delay = +(u.data[1][idx].toFixed(0));
                                 ttMagGlass.innerHTML =`
                                      <div style="display: flex; align-items: center;">
                                         <span class="wts-tt-prev-key">${prevKey}</span>
@@ -2756,7 +2964,7 @@ ${menuHTML}
                 ready: [
                     (u) => {
 
-                        const ttInfo = document.getElementById('wts-chart-tooltip') || document.createElement("div");
+                        const ttInfo = oO('#wts-chart-tooltip') || document.createElement("div");
                         ttInfo.id = 'wts-chart-tooltip';
                         ttInfo.className = 'wts-chart-tooltip';
                         ttInfo.style.display = "none";
@@ -3046,7 +3254,7 @@ const FileImport = {
         let diff = 0;
         for (let line of lines) {
             const [timestamp, data] = line.trim().split(' ');
-            const delay = parseInt(timestamp, 16);
+            const delay = +(timestamp, 16);
 
             if (delay > RESET_DELAY) {
                 if (wtsData.length && wtsData.length >= MIN_TSF_LENGTH_TO_SAVE) result.push(wtsData);
@@ -3055,7 +3263,7 @@ const FileImport = {
             }
 
             const keyCodeHex = data.slice(0, 4);
-            const keyCode = parseInt(keyCodeHex, 16);
+            const keyCode = +(keyCodeHex, 16);
             if (wtsData.length) diff += delay; // accumulate delays of non-printable keypresses
             if (keyCode == 0) continue;
             const key = subst[keyCodeHex] || String.fromCodePoint(keyCode);
