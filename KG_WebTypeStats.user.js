@@ -145,9 +145,9 @@ const ColorUtils = {
         if (hex.length === 3) {
             hex = hex.split("").map(c => c + c).join("");
         }
-        let r = parseInt(hex.substr(0, 2), 16) / 255;
-        let g = parseInt(hex.substr(2, 2), 16) / 255;
-        let b = parseInt(hex.substr(4, 2), 16) / 255;
+        let r = parseInt(hex.substr(0, 2) / 255;
+        let g = parseInt(hex.substr(2, 2) / 255;
+        let b = parseInt(hex.substr(4, 2) / 255;
 
         let max = Math.max(r, g, b), min = Math.min(r, g, b);
         let h, s, l = (max + min) / 2;
@@ -3254,7 +3254,7 @@ const FileImport = {
         let diff = 0;
         for (let line of lines) {
             const [timestamp, data] = line.trim().split(' ');
-            const delay = +(timestamp, 16);
+            const delay = parseInt(timestamp, 16);
 
             if (delay > RESET_DELAY) {
                 if (wtsData.length && wtsData.length >= MIN_TSF_LENGTH_TO_SAVE) result.push(wtsData);
@@ -3263,7 +3263,7 @@ const FileImport = {
             }
 
             const keyCodeHex = data.slice(0, 4);
-            const keyCode = +(keyCodeHex, 16);
+            const keyCode = parseInt(keyCodeHex, 16);
             if (wtsData.length) diff += delay; // accumulate delays of non-printable keypresses
             if (keyCode == 0) continue;
             const key = subst[keyCodeHex] || String.fromCodePoint(keyCode);
