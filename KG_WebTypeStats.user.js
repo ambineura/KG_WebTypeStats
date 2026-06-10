@@ -145,9 +145,9 @@ const ColorUtils = {
         if (hex.length === 3) {
             hex = hex.split("").map(c => c + c).join("");
         }
-        let r = parseInt(hex.substr(0, 2) / 255;
-        let g = parseInt(hex.substr(2, 2) / 255;
-        let b = parseInt(hex.substr(4, 2) / 255;
+        let r = parseInt(hex.substr(0, 2), 16) / 255;
+        let g = parseInt(hex.substr(2, 2), 16) / 255;
+        let b = parseInt(hex.substr(4, 2), 16) / 255;
 
         let max = Math.max(r, g, b), min = Math.min(r, g, b);
         let h, s, l = (max + min) / 2;
